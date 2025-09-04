@@ -32,7 +32,7 @@ def run_linear(
     """
 
     linear_layer = models.Linear(d_in, d_out)
-    linear_layer.load_state_dict({'weights': weights})
+    linear_layer.load_state_dict({'weight': weights})
     return linear_layer.forward(in_features)
 
 
@@ -55,7 +55,7 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
     embedding_layer = models.Embedding(vocab_size, d_model)
-    embedding_layer.load_state_dict({'embeddings': weights})
+    embedding_layer.load_state_dict({'weight': weights})
     return embedding_layer.forward(token_ids)
 
 
@@ -89,9 +89,11 @@ def run_swiglu(
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
     swiglu = models.MLP(d_model, d_ff)
-    swiglu.w1_linear.weights.data = w1_weight
-    swiglu.w2_linear.weights.data = w2_weight
-    swiglu.w3_linear.weights.data = w3_weight
+    swiglu.load_state_dict({
+        "w1.weight": w1_weight,
+        "w2.weight": w2_weight,
+        "w3.weight": w3_weight
+    })
     return swiglu.forward(in_features)
 
 
@@ -150,14 +152,12 @@ def run_multihead_self_attention(
     self_attention_layer = models.MultiHeadSelfAttention(
         d_model, num_heads
     )
-    assert q_proj_weight.shape == k_proj_weight.shape
-    assert v_proj_weight.shape == q_proj_weight.shape
-    qkv_weights = torch.cat(
-        (q_proj_weight, k_proj_weight, v_proj_weight),
-        dim=0
-    )
-    self_attention_layer.proj_layer.weights.data = qkv_weights
-    self_attention_layer.out_proj_layer.weights.data = o_proj_weight
+    self_attention_layer.load_state_dict({
+        "q_proj.weight": q_proj_weight,
+        "k_proj.weight": k_proj_weight,
+        "v_proj.weight": v_proj_weight,
+        "output_proj.weight": o_proj_weight
+    })
     return self_attention_layer(in_features)
 
 
@@ -201,14 +201,12 @@ def run_multihead_self_attention_with_rope(
     self_attention_layer = models.MultiHeadSelfAttention(
         d_model, num_heads, apply_rope=True, theta=theta, max_seq_len=max_seq_len
     )
-    assert q_proj_weight.shape == k_proj_weight.shape
-    assert v_proj_weight.shape == q_proj_weight.shape
-    qkv_weights = torch.cat(
-        (q_proj_weight, k_proj_weight, v_proj_weight),
-        dim=0
-    )
-    self_attention_layer.proj_layer.weights.data = qkv_weights
-    self_attention_layer.out_proj_layer.weights.data = o_proj_weight
+    self_attention_layer.load_state_dict({
+        "q_proj.weight": q_proj_weight,
+        "k_proj.weight": k_proj_weight,
+        "v_proj.weight": v_proj_weight,
+        "output_proj.weight": o_proj_weight
+    })
     return self_attention_layer(in_features, token_positions)
 
 
@@ -307,7 +305,12 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    layer = models.TransformerBlock(
+        d_model, num_heads, d_ff, apply_rope=True, theta=theta, max_seq_len=max_seq_len
+    )
+    layer.load_state_dict(weights)
+    res = layer(in_features)
+    return res
 
 
 def run_transformer_lm(
@@ -389,7 +392,10 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    transformer = models.TransformerLM(vocab_size, context_length, num_layers, d_model, num_heads, d_ff, apply_rope=True, theta=rope_theta)
+    transformer.load_state_dict(weights)
+    res = transformer(in_indices)
+    return res
 
 
 def run_rmsnorm(
@@ -413,7 +419,7 @@ def run_rmsnorm(
         RMSNorm of the `in_features`.
     """
     rms_norm = models.RMSNorm(d_model, eps)
-    rms_norm.load_state_dict({'gates': weights})
+    rms_norm.load_state_dict({'weight': weights})
     return rms_norm.forward(in_features)
 
 
@@ -485,7 +491,8 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    from cs336_basics.train import cross_entropy_loss
+    return cross_entropy_loss(inputs, targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -504,8 +511,8 @@ def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
-
+    from cs336_basics import train
+    return train.AdamW
 
 def run_get_lr_cosine_schedule(
     it: int,

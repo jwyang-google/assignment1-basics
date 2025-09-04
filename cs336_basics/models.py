@@ -17,7 +17,7 @@ class Linear(torch.nn.Module):
     # initialize weights
     init_mean = 0.0
     init_std = (2.0/(in_features + out_features)) ** 0.5
-    self.weights = torch.nn.Parameter(torch.nn.init.trunc_normal_(
+    self.weight = torch.nn.Parameter(torch.nn.init.trunc_normal_(
       torch.empty((out_features, in_features), device=device, dtype=dtype), 
       mean=init_mean, 
       std=init_std,
@@ -28,7 +28,7 @@ class Linear(torch.nn.Module):
       self,
       x: torch.Tensor
   ):
-    res = einsum(x, self.weights, "... d_in, d_out d_in -> ... d_out")
+    res = einsum(x, self.weight, "... d_in, d_out d_in -> ... d_out")
     return res
 
 
@@ -44,7 +44,7 @@ class Embedding(torch.nn.Module):
     super().__init__()
 
     # initialize embedding weights
-    self.embeddings = torch.nn.Parameter(torch.nn.init.trunc_normal_(
+    self.weight = torch.nn.Parameter(torch.nn.init.trunc_normal_(
       torch.empty((vocab_size, d_model), device=device, dtype=dtype),
       mean=0.0,
       std=1.0,
@@ -53,7 +53,7 @@ class Embedding(torch.nn.Module):
     ))
 
   def forward(self, x: torch.Tensor):
-    res = self.embeddings[x]
+    res = self.weight[x]
     return res
   
 
@@ -71,13 +71,13 @@ class RMSNorm(torch.nn.Module):
     self.eps = eps
 
     # initialize weights
-    self.gates = torch.nn.Parameter(torch.ones((d_model, ), dtype=dtype, device=device))
+    self.weight = torch.nn.Parameter(torch.ones((d_model, ), dtype=dtype, device=device))
 
   def forward(self, x: torch.Tensor):
     in_dtype = x.dtype
     x = x.to(torch.float32)
     rms = ((torch.sum(x ** 2, axis=2)/self.d_model) + self.eps) ** 0.5
-    x = x * self.gates / torch.unsqueeze(rms, 2)
+    x = x * self.weight / torch.unsqueeze(rms, 2)
     return x.to(in_dtype)
   
 
@@ -93,18 +93,18 @@ class MLP(torch.nn.Module):
     super().__init__()
 
     # define layers
-    self.w1_linear = Linear(d_model, d_ff, device, dtype)
-    self.w3_linear = Linear(d_model, d_ff, device, dtype)
-    self.w2_linear = Linear(d_ff, d_model, device, dtype)
+    self.w1 = Linear(d_model, d_ff, device, dtype)
+    self.w3 = Linear(d_model, d_ff, device, dtype)
+    self.w2 = Linear(d_ff, d_model, device, dtype)
 
 
   def forward(self, x: torch.Tensor):
-    x1 = self.w1_linear.forward(x)
-    x3 = self.w3_linear.forward(x)
+    x1 = self.w1.forward(x)
+    x3 = self.w3.forward(x)
 
     x1 = torch.sigmoid(x1) * x1
     x = x1 * x3
-    x = self.w2_linear.forward(x)
+    x = self.w2.forward(x)
     return x
   
 
@@ -180,8 +180,7 @@ def scaled_dot_product_attention(
   qk_product = qk_product / (d_k ** 0.5)
 
   # apply mask to qk_product
-  # qk_product = torch.where(mask, qk_product, float('-inf'))
-  qk_product = qk_product.masked_fill(mask, float('-inf'))
+  qk_product = torch.where(mask, qk_product, float('-inf'))
   w = softmax(qk_product, dim=-1)
 
   # compute wv product
@@ -208,7 +207,11 @@ class MultiHeadSelfAttention(torch.nn.Module):
     self.head_dim = self.d_model // self.n_heads
 
     # Q, K, V Projection Matrix
-    self.proj_layer = Linear(d_model, 3*d_model, device, dtype)
+    # self.proj_layer = Linear(d_model, 3*d_model, device, dtype)
+    self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+    self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+    self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+
 
     # rope layer
     self.apply_rope = apply_rope
@@ -218,16 +221,19 @@ class MultiHeadSelfAttention(torch.nn.Module):
       self.rope = RoPE(self.head_dim, theta, max_seq_len)
       
     # out projection layer
-    self.out_proj_layer = Linear(d_model, d_model, device, dtype)
+    self.output_proj = Linear(d_model, d_model, device, dtype)
 
   def forward(self, x: torch.Tensor, token_posiitons: torch.Tensor=None):
     # QKV projection
-    qkv_projection = self.proj_layer(x)
-    qkv_projection = rearrange(qkv_projection, "... (three d_k) -> ... three d_k", three=3)
-    q = qkv_projection[:, :, 0, :]
-    k = qkv_projection[:, :, 1, :]
-    v = qkv_projection[:, :, 2, :]
+    # qkv_projection = self.proj_layer(x)
+    # qkv_projection = rearrange(qkv_projection, "... (three d_k) -> ... three d_k", three=3)
+    # q = qkv_projection[:, :, 0, :]
+    # k = qkv_projection[:, :, 1, :]
+    # v = qkv_projection[:, :, 2, :]
     # q, k, v = qkv_projection.chunk(3, dim=-1)
+    q = self.q_proj(x)
+    k = self.k_proj(x)
+    v = self.v_proj(x)
 
     # self attetion with causal mask
     q = rearrange(q, "... seq (n_heads head_dim) -> ... n_heads seq head_dim", n_heads=self.n_heads)
@@ -241,11 +247,11 @@ class MultiHeadSelfAttention(torch.nn.Module):
     seq_len = x.shape[-2]
     rows = torch.arange(seq_len).unsqueeze(dim=1)
     cols = torch.arange(seq_len).unsqueeze(dim=0)
-    mask = rows < cols
+    mask = rows >= cols
     attention = scaled_dot_product_attention(q, k, v, mask)
     
     attention = rearrange(attention, "... n_heads seq head_dim -> ... seq (n_heads head_dim)", n_heads=self.n_heads)
-    output = self.out_proj_layer(attention)
+    output = self.output_proj(attention)
     return output
 
 
@@ -264,10 +270,10 @@ class TransformerBlock(torch.nn.Module):
     super().__init__()
     
     # pre normalization layer
-    self.attn_rms_norm = RMSNorm(d_model, device=device, dtype=dtype)
+    self.ln1 = RMSNorm(d_model, device=device, dtype=dtype)
 
     # attention layer
-    self.attn_layer = MultiHeadSelfAttention(
+    self.attn = MultiHeadSelfAttention(
       d_model,
       n_heads,
       apply_rope=apply_rope,
@@ -278,22 +284,27 @@ class TransformerBlock(torch.nn.Module):
     )
 
     # MLP layer
-    self.mlp_rms_norm = RMSNorm(d_model, device=device, dtype=dtype)
-    self.mlp = MLP(d_model, d_ff, device, dtype)
+    self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
+    self.ffn = MLP(d_model, d_ff, device, dtype)
 
   
-  def forward(self, x: torch.Tensor):
+  def forward(self, x: torch.Tensor, token_positions=None):
+    if token_positions is None:
+        token_positions = torch.arange(x.size(1), device=x.device).expand(
+            x.size(0), -1
+        )
+
     orig_x = x
-    x = self.attn_rms_norm(x)
-    x = self.attn_layer(x)
+    x = self.ln1(x)
+    x = self.attn(x, token_positions)
     x = orig_x + x
 
     orig_x = x
-    x = self.rms_norm(x)
-    x = self.mlp(x)
+    x = self.ln2(x)
+    x = self.ffn(x)
     x = orig_x + x
     return x
-  
+
 
 class TransformerLM(torch.nn.Module):
 
@@ -310,27 +321,33 @@ class TransformerLM(torch.nn.Module):
   ):
     super().__init__()
     # embedding layer
-    self.embedding = Embedding(vocab_size, d_model)
+    self.token_embeddings = Embedding(vocab_size, d_model)
     
     # list of transformer blocks
-    self.transformer_blocks = [TransformerBlock(d_model, n_heads, d_ff, apply_rope, theta, context_length) for _ in range(num_layers)]
+    self.layers = torch.nn.ModuleList(
+      [TransformerBlock(d_model, n_heads, d_ff, apply_rope, theta, context_length) for _ in range(num_layers)]
+    )
 
     # output norm
-    self.output_norm = RMSNorm(d_model=d_model)
+    self.ln_final = RMSNorm(d_model=d_model)
 
     # output linear projection
-    self.output_proj = Linear(d_model, vocab_size)
+    self.lm_head = Linear(d_model, vocab_size)
 
   
-  def forward(self, x: torch.Tensor ):
-    x = Embedding(x)
+  def forward(self, x: torch.Tensor, token_positions=None):
+    x = self.token_embeddings(x)
 
-    for transoformer_block in self.transformer_blocks:
-      x = transoformer_block(x)
+    if token_positions is None:
+      token_positions = torch.arange(x.size(1), device=x.device).expand(
+          x.size(0), -1
+    )
 
-    x = self.output_norm(x)
-    x = self.output_proj(x)
-    x = softmax(x, dim=-1)
+    for layer in self.layers:
+      x = layer(x, token_positions)
+
+    x = self.ln_final(x)
+    x = self.lm_head(x)
     return x
 
 
