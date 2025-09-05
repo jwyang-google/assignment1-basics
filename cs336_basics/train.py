@@ -1,8 +1,58 @@
 from .models import *
+from .tokenizer import BPE_Tokenizer
 import torch
 from collections.abc import Callable, Iterable
 from typing import Optional
 import math
+import numpy as np
+import os, typing
+
+
+def load_data(data, batch_size, context_length, device):
+  data_len = data.shape[0]
+  assert data_len - context_length >= batch_size
+
+  input_tensors = np.zeros((batch_size, context_length))
+  target_tensors = np.zeros((batch_size, context_length))
+  
+  batch_idx = np.random.choice(np.arange(data_len - context_length, dtype=np.int8), size=batch_size, replace=False)
+  target_idx = batch_idx + 1
+  
+  for i in range(batch_size):
+    input_tensors[i, :] = data[batch_idx[i]:batch_idx[i]+context_length]
+    target_tensors[i, :] = data[target_idx[i]:target_idx[i]+context_length]
+
+  input_tensors = torch.Tensor(input_tensors).to(device)
+  target_tensors = torch.Tensor(target_tensors).to(device)
+
+  return input_tensors, target_tensors
+
+
+def save_checkpoint(
+    model: torch.nn.Module, 
+    optimizer: torch.nn.Module, 
+    iteration: int, 
+    out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]
+):
+  model_state = model.state_dict()
+  optimizer_state = optimizer.state_dict()
+  torch.save({
+    "iteration": iteration, 
+    "model_state": model_state, 
+    "optimizer_state": optimizer_state
+  }, out)
+
+
+def load_checkpoint(
+    src, model, optimizer=None
+):
+  ckpt = torch.load(src)
+  model.load_state_dict(ckpt['model_state'])
+  if optimizer:
+    optimizer.load_state_dict(ckpt['optimizer_state'])
+  iter = ckpt['iteration']
+  return int(iter)
+
 
 # batch, vocab_size
 # batch
@@ -127,7 +177,119 @@ class AdamW(torch.optim.Optimizer):
         state['t'] = t + 1
         state['m'] = m
         state['v'] = v
+
+
+class Train():
+
+  def __init__(
+      self, 
+      # device for training
+      device: str,
+
+      # tokenizer
+      training_filepath: str | os.PathLike,
+      validation_filepath: str | os.PathLike,
+      vocab_filepath: str | os.PathLike,
+      merges_filepath: str | os.PathLike,
+      special_tokens: list[str] | None,
+
+      # training loop hyperparams
+      batch_size: int, 
+      
+      # model params
+      vocab_size: int,
+      context_length: int,
+      num_layers: int,
+      d_model: int,
+      n_heads: int,
+      d_ff: int,
+      dtype: torch.dtype | None, 
+
+      # optimizer params
+      lr: float=1e-3, 
+      weight_decay: float=1e-2, 
+      betas: tuple[float, float]=(0.9, 0.999),
+      eps: float=1e10-8,
+    
+      # architecture hyperparams
+      apply_rope: bool = True,
+      rope_theta: float | None = None,
+      apply_nope: bool = False,
+      pre_norm: bool = True,
+      post_norm: bool = False,
+      ffn_type: str = "swiglu"
+  ):
+    self.device = device
+    self.dtype = dtype
+
+    self.batch_size = batch_size
+    self.training_filepath = training_filepath
+    self.validation_filepath = validation_filepath
+
+    self.context_length = context_length
+
+    # init tokenizer
+    self.tokenizer = BPE_Tokenizer(
+      train_from_scratch=False, 
+      vocab_filepath=vocab_filepath,
+      merges_filepath=merges_filepath,
+      vocab_size=vocab_size,
+      special_tokens=["<|endoftext|>"]
+    )
+    
+    # init model
+    self.model = TransformerLM(
+      vocab_size, 
+      context_length, 
+      num_layers, 
+      d_model, 
+      n_heads, 
+      d_ff, 
+      apply_rope, 
+      theta=rope_theta,
+      device=device
+    )
+
+    # init optimizer
+    self.optimizer = AdamW(
+      self.model.state_dict(),
+      lr=lr,
+      weight_decay=weight_decay,
+      betas=betas,
+      eps=eps
+    )
   
+  def train(self, num_iters: int):
+    # load data
+    training_data = np.memmap(self.corpus, dtype="uint16", mode="r")
+    total_positions = training_data.shape[0] - self.context_length - self.batch_size
+
+    # split data into multiple chunks
+    for i in range(num_iters):
+      # get a random position
+      position = np.random.choice(np.arange(total_positions, dtype=np.int32))
+
+      # get batch
+      batched_data, batched_targets = load_data(
+        training_data[position:position+self.batch_size+self.context_length], 
+        self.batch_size, 
+        self.context_length, 
+        device=self.device
+      )
+
+      logits = self.model.forward(batched_data)
+      loss = cross_entropy_loss(logits, batched_targets)
+      print("iteration: {}, loss: {}".format(i, loss))
+
+      loss.backward()
+      self.optimizer.step()    
+
+      # run on validation dataset & save checkpoint
+      if i % 1000 == 0:
+        # TODO - save checkpoint
+        pass
+        # TODO - run on validation dataset
+
 
 def training_loop_example(learning_rate=1):
   weights = torch.nn.Parameter(5 * torch.randn((10, 10)))

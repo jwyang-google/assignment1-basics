@@ -318,21 +318,23 @@ class TransformerLM(torch.nn.Module):
       d_ff: int, 
       apply_rope: bool = False,
       theta: float | None = None,
+      device: torch.device | None = None,
+      dtype: torch.dtype | None = None,
   ):
     super().__init__()
     # embedding layer
-    self.token_embeddings = Embedding(vocab_size, d_model)
+    self.token_embeddings = Embedding(vocab_size, d_model, device, dtype)
     
     # list of transformer blocks
     self.layers = torch.nn.ModuleList(
-      [TransformerBlock(d_model, n_heads, d_ff, apply_rope, theta, context_length) for _ in range(num_layers)]
+      [TransformerBlock(d_model, n_heads, d_ff, apply_rope, theta, context_length, device, dtype) for _ in range(num_layers)]
     )
 
     # output norm
-    self.ln_final = RMSNorm(d_model=d_model)
+    self.ln_final = RMSNorm(d_model=d_model, device=device, dtype=dtype)
 
     # output linear projection
-    self.lm_head = Linear(d_model, vocab_size)
+    self.lm_head = Linear(d_model, vocab_size, device, dtype)
 
   
   def forward(self, x: torch.Tensor, token_positions=None):

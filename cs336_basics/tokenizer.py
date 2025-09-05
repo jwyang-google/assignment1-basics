@@ -136,7 +136,12 @@ class BPE_Tokenizer():
     assert vocab is not None
     return cls(train_from_scratch=False, vocab=vocab, merges=merges, special_tokens=special_tokens)
   
-  def encode(self, text: str) -> list[int]:
+  def encode_corpus_to_file(self, text: str, out: str | os.PathLike):
+    encode_ids = self.encode(text=text)
+    import numpy as np
+    np.save(out, encode_ids)
+  
+  def encode(self, text: str) -> list[int]: 
     def encode_text_without_special_token(text):
       PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
       token_iters = re.finditer(PAT, text)
@@ -193,7 +198,6 @@ class BPE_Tokenizer():
       elif part:
         res_token_ids.extend(encode_text_without_special_token(part))
 
-    
     return res_token_ids
 
   def decode(self, ids: list[int]) -> str:
